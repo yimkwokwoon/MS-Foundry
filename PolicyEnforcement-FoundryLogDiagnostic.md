@@ -7,10 +7,7 @@
   - [Azure Policy Lifecycle](#azure-policy-lifecycle)
   - [DeployIfNotExists (DINE) Effect](#deployifnotexists-dine-effect)
   - [Remediation Task Mechanics](#remediation-task-mechanics)
-- [Policy Definition Details](#policy-definition-details)
-  - [Original Version (with Bug)](#original-version-with-bug)
-  - [Fixed Version (Log Analytics + Blob Storage)](#fixed-version-log-analytics--blob-storage)
-  - [Bug Fix Summary](#bug-fix-summary)
+- [Policy Definition](#policy-definition)
 - [Deployment Steps — Azure Portal](#deployment-steps--azure-portal)
 - [Deployment Steps — Azure CLI / PowerShell](#deployment-steps--azure-cli--powershell)
 - [Remediation Troubleshooting](#remediation-troubleshooting)
@@ -84,136 +81,9 @@ Remediation Tasks support two Resource Discovery Modes:
 
 ---
 
-## Policy Definition Details
+## Policy Definition
 
-### Original Version (with Bug)
-
-The following is the original Policy Definition, which contains a common error:
-
-```json
-{
-  "displayName": "poc-foundrylogging-cogsvcs",
-  "policyType": "Custom",
-  "mode": "All",
-  "description": "Deploy diagnostic settings to Log Analytics for Azure AI services (Cognitive Services accounts).",
-  "metadata": {
-    "category": "foundry-custom",
-    "version": "1.0.1"
-  },
-  "parameters": {
-    "logAnalyticsWorkspaceId": {
-      "type": "String",
-      "metadata": {
-        "displayName": "Log Analytics Workspace Resource ID",
-        "description": "Resource ID of the Log Analytics workspace to send diagnostics to."
-      }
-    },
-    "diagnosticSettingName": {
-      "type": "String",
-      "defaultValue": "setByPolicy",
-      "metadata": {
-        "displayName": "Diagnostic setting name",
-        "description": "Name of the diagnostic setting to create."
-      }
-    },
-    "effect": {
-      "type": "String",
-      "allowedValues": ["DeployIfNotExists", "AuditIfNotExists", "Disabled"],
-      "defaultValue": "DeployIfNotExists",
-      "metadata": {
-        "displayName": "Effect",
-        "description": "Enable or disable the execution of the policy."
-      }
-    }
-  },
-  "policyRule": {
-    "if": {
-      "field": "type",
-      "equals": "Microsoft.CognitiveServices/accounts"
-    },
-    "then": {
-      "effect": "[parameters('effect')]",
-      "details": {
-        "type": "Microsoft.Insights/diagnosticSettings",
-        "name": "[parameters('diagnosticSettingName')]",
-        "existenceCondition": {
-          "allOf": [
-            {
-              "field": "Microsoft.Insights/diagnosticSettings/workspaceId",
-              "equals": "[parameters('logAnalyticsWorkspaceId')]"
-            },
-            {
-              "field": "Microsoft.Insights/diagnosticSettings/logs[*].enabled",
-              "equals": "true"
-            },
-            {
-              "field": "Microsoft.Insights/diagnosticSettings/metrics[*].enabled",
-              "equals": "true"
-            }
-          ]
-        },
-        "roleDefinitionIds": [
-          "/providers/Microsoft.Authorization/roleDefinitions/92aaf0da-9dab-42b6-94a3-d43ce8d16293",
-          "/providers/Microsoft.Authorization/roleDefinitions/749f88d5-cbae-40b8-bcfc-e573ddc772fa"
-        ],
-        "deployment": {
-          "properties": {
-            "mode": "incremental",
-            "template": {
-              "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-              "contentVersion": "1.0.0.0",
-              "parameters": {
-                "logAnalyticsWorkspaceId": { "type": "String" },
-                "diagnosticSettingName": { "type": "String" }
-              },
-              "resources": [
-                {
-                  "type": "Microsoft.Insights/diagnosticSettings",
-                  "apiVersion": "2021-05-01-preview",
-                  "name": "[parameters('diagnosticSettingName')]",
-                  "scope": "[field('id')]",
-                  "properties": {
-                    "workspaceId": "[parameters('logAnalyticsWorkspaceId')]",
-                    "logs": [{ "categoryGroup": "allLogs", "enabled": true }],
-                    "metrics": [{ "category": "AllMetrics", "enabled": true }]
-                  }
-                }
-              ]
-            },
-            "parameters": {
-              "logAnalyticsWorkspaceId": { "value": "[parameters('logAnalyticsWorkspaceId')]" },
-              "diagnosticSettingName": { "value": "[parameters('diagnosticSettingName')]" }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-#### Bug: `field()` Cannot Be Used Inside an ARM Template
-
-The error is on this line:
-
-```json
-"scope": "[field('id')]"   // ❌ field() is a Policy function — it cannot be used inside ARM template resources
-```
-
-Error message from Azure:
-
-```
-Deployment template validation failed: 'The template resource 'setByPolicy' at line '1'
-and column '344' is not valid: The template function 'field' is not valid.'
-```
-
-**Root cause**: `field()` is an Azure Policy-specific function. It is only valid within the `policyRule` evaluation context and the `deployment.parameters` section. The ARM template `resources` block only supports native ARM template functions (e.g., `parameters()`, `variables()`, `resourceGroup()`, etc.).
-
----
-
-### Fixed Version (Log Analytics + Blob Storage)
-
-Below is the corrected and enhanced Policy Definition that sends diagnostics to both Log Analytics and Blob Storage:
+The following Policy Definition uses `DeployIfNotExists` to automatically create diagnostic settings on all Cognitive Services resources, sending logs and metrics to both Log Analytics and Blob Storage:
 
 ```json
 {
@@ -334,13 +204,13 @@ Below is the corrected and enhanced Policy Definition that sends diagnostics to 
 }
 ```
 
-### Bug Fix Summary
+### Key Design Notes
 
-| # | Issue | Fix |
-|---|-------|-----|
-| 1 | `"scope": "[field('id')]"` used a Policy-only function inside the ARM template `resources` block | Added `resourceId` as a template parameter; pass `[field('id')]` via `deployment.parameters`; use `[parameters('resourceId')]` inside the template |
-| 2 | Only supported Log Analytics — no Blob Storage | Added `storageAccountId` parameter; included it in the template and `existenceCondition` |
-| 3 | `roleDefinitionIds` was missing Storage Account Contributor | Added `17d1049b-9a84-46fb-8f53-869881c3d3ab` (Storage Account Contributor) |
+| # | Detail |
+|---|--------|
+| 1 | `field('id')` is passed via `deployment.parameters` (not directly in the ARM template `resources` block, as `field()` is a Policy-only function) |
+| 2 | Supports both **Log Analytics** and **Blob Storage** as diagnostic destinations |
+| 3 | `roleDefinitionIds` includes **Log Analytics Contributor**, **Monitoring Contributor**, and **Storage Account Contributor** |
 
 ---
 
